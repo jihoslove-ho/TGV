@@ -30,6 +30,23 @@ EXCL_COLOR = (0, 80, 255)   # 수동 제외 영역 표시색 (BGR)
 HOLE_COLOR = (220, 80, 0)   # 검출된 홀 표시색 (BGR)
 EDGE_HOLE_COLOR = (0, 180, 255)  # 가장자리 반원 표시색 (BGR)
 
+# 파티클 색상 프리셋 (hex RGB → 레이블, BGR tuple)
+PARTICLE_COLOR_PRESETS = [
+    ("#3cdc00", "초록"),
+    ("#ff2020", "빨강"),
+    ("#ffd700", "노랑"),
+    ("#00b4ff", "하늘"),
+    ("#cc00ff", "보라"),
+    ("#ffffff", "흰색"),
+]
+_DEFAULT_PARTICLE_HEX = "#3cdc00"
+
+def _hex_to_bgr(h):
+    """hex RGB 문자열 → OpenCV BGR tuple"""
+    h = h.lstrip('#')
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (b, g, r)
+
 _F    = "Segoe UI"
 F_XS  = (_F, 8)
 F_SM  = (_F, 9)
@@ -312,7 +329,7 @@ class Vision:
         rows, total, idx = [], 0, 1
         min_area = p.get('min_area', 1.0)
         hole_margin = p.get('hole_margin', 5)
-        CLR_P = (0, 220, 60)
+        CLR_P = p.get('particle_color', _hex_to_bgr(_DEFAULT_PARTICLE_HEX))
 
         for c in cs:
             area = float(cv2.contourArea(c))
@@ -387,6 +404,8 @@ class UI:
         self.v_excl_r    = tk.IntVar(value=80)    # 수동 제외 원 반경
         self.v_draw_mode = tk.BooleanVar(value=False)
         self.lbl_th_hint = None   # 임계값 힌트 레이블
+        self.v_particle_color = tk.StringVar(value=_DEFAULT_PARTICLE_HEX)
+        self._clr_btns = {}
         self._mag_btns   = {}
         self.lbl_min_size = None
         self.lbl_excl_count = None
@@ -715,6 +734,20 @@ class UI:
                  font=F_XS, bg=BG2, fg=FG2).pack(anchor="w")
         self.lbl_th_hint = None
 
+        # 파티클 색상 선택
+        r_clr = tk.Frame(res_inner, bg=BG2); r_clr.pack(fill=tk.X, pady=(5, 2))
+        tk.Label(r_clr, text="파티클 색상", font=F_XS, bg=BG2, fg=FG2,
+                 width=14, anchor="w").pack(side=tk.LEFT, padx=(0, 4))
+        for hex_c, name in PARTICLE_COLOR_PRESETS:
+            is_sel = (hex_c == self.v_particle_color.get())
+            b = tk.Button(r_clr, bg=hex_c, width=2,
+                          relief="sunken" if is_sel else "flat",
+                          bd=2, cursor="hand2",
+                          activebackground=hex_c,
+                          command=lambda h=hex_c: self._set_particle_color(h))
+            b.pack(side=tk.LEFT, padx=2)
+            self._clr_btns[hex_c] = b
+
         # ── 우 컬럼: TGV 홀 자동 마스킹 ─────────────────────────────
         row_hdr(right, "TGV 홀 자동 마스킹  [앞/뒷면 공통]", RD)
         r3 = self._frame(right, BG1); r3.pack(fill=tk.X, padx=4, pady=(0, 3))
@@ -728,6 +761,12 @@ class UI:
                      self.v_hole_mg, 0, 60, 1, self.cb['update_all'], 120)
         tk.Label(r3b, text="림 반경 외부\n추가 제외",
                  font=F_XS, bg=BG1, fg=FG2, justify="left").pack(side=tk.LEFT, padx=6)
+
+    def _set_particle_color(self, hex_c):
+        self.v_particle_color.set(hex_c)
+        for h, b in self._clr_btns.items():
+            b.configure(relief="sunken" if h == hex_c else "flat")
+        self.cb['update_all']()
 
     # ── C3: 검사 범위 & 결과 ─────────────────────────────────────────
     def _build_c3(self, p):
@@ -1068,6 +1107,7 @@ class UI:
             min_area = max(1.0, np.pi * r_px ** 2)
         else:
             min_area = 1.0
+        _hex = self.v_particle_color.get()
         return dict(
             mag=self.v_mag_sel.get(),
             px_per_mm=px_per_mm, pdiam=pdiam, min_area=min_area,
@@ -1077,6 +1117,8 @@ class UI:
             margin=self.v_margin.get(),
             hole_thr=self.v_hole_thr.get(),
             hole_margin=self.v_hole_mg.get(),
+            particle_color=_hex_to_bgr(_hex),
+            particle_color_hex=_hex,
         )
 
     def set_params(self, p):
@@ -1089,6 +1131,8 @@ class UI:
         if 'margin'     in p: self.v_margin.set(p['margin'])
         if 'hole_thr'   in p: self.v_hole_thr.set(p.get('hole_thr', 120))
         if 'hole_margin'in p: self.v_hole_mg.set(p.get('hole_margin', 30))
+        if 'particle_color_hex' in p:
+            self._set_particle_color(p['particle_color_hex'])
         self.update_min_size_display()
 
     def update_table(self, rows):
@@ -1229,7 +1273,8 @@ class SettingManager:
     def save_recipe_for_mag(self, mag, params):
         d = self.data[mag]
         for k in ('pdiam', 'bg_kernel', 'res_th', 'margin',
-                   'hole_thr', 'hole_margin', 'br', 'ct', 'bl'):
+                   'hole_thr', 'hole_margin', 'br', 'ct', 'bl',
+                   'particle_color_hex'):
             if k in params:
                 d[k] = params[k]
         self._save()
@@ -1784,9 +1829,10 @@ class App:
             return
         p = self.ui.get_params()
         hole_margin = p.get('hole_margin', 30)
+        auto_color = p.get('particle_color', _hex_to_bgr(_DEFAULT_PARTICLE_HEX))
         out = self.img_orig.copy()
         for pt in self.particles:
-            color = (0, 200, 255) if pt.get('manual') else (0, 220, 60)
+            color = (0, 200, 255) if pt.get('manual') else auto_color
             cv2.circle(out, (pt['x_px'], pt['y_px']), 6, color, 2)
         for hole in (self.holes or []):
             clr = EDGE_HOLE_COLOR if hole['is_edge'] else HOLE_COLOR
