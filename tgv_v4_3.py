@@ -380,7 +380,7 @@ class UI:
         self.v_ct        = tk.DoubleVar(value=1.0)
         self.v_bl        = tk.IntVar(value=0)
         self.v_bg_kernel = tk.IntVar(value=71)     # 로컬 배경 추정 커널 (항상 홀수)
-        self.v_res_th    = tk.IntVar(value=25)    # 잔차 임계값
+        self.v_res_th    = tk.IntVar(value=25)    # 배경 대비 임계값
         self.v_margin    = tk.IntVar(value=0)
         self.v_hole_thr  = tk.IntVar(value=120)   # 홀 감지 림 임계값
         self.v_hole_mg   = tk.IntVar(value=30)    # 홀 마스크 여유(px)
@@ -687,7 +687,7 @@ class UI:
         tk.Frame(left, bg=BD2, height=1).pack(fill=tk.X, padx=8, pady=1)
 
         # 행 2: 로컬 잔차 파티클 검출 (v4.3 핵심)
-        row_hdr(left, "파티클 검출  —  로컬 잔차법 (Local Residual)", AC)
+        row_hdr(left, "파티클 검출  —  배경 대비법 (Local Residual)", AC)
 
         res_outer = tk.Frame(left, bg=BG2, bd=0)
         res_outer.pack(fill=tk.X, padx=4, pady=(0, 3))
@@ -704,7 +704,7 @@ class UI:
 
         # 잔차 임계값
         r_res = tk.Frame(res_inner, bg=BG2); r_res.pack(fill=tk.X, pady=(2, 0))
-        self._slider(r_res, "잔차 임계값  ",
+        self._slider(r_res, "배경 대비 임계값",
                      self.v_res_th, 3, 100, 1, self.cb['update_all'], 160)
         info_f = tk.Frame(r_res, bg=BG2); info_f.pack(side=tk.LEFT, padx=8)
         tk.Label(info_f, text="최소 검출 크기", font=F_XS, bg=BG2, fg=FG2).pack(anchor="w")
@@ -927,29 +927,22 @@ class UI:
         zoom_lbl = tk.Label(ctrl, text="배율: 100%", font=F_SMB, bg=BG1, fg=FG, width=12)
         zoom_lbl.pack(side=tk.LEFT, padx=12)
 
-        rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB if gray else cv2.COLOR_BGR2RGB)
-        orig_h, orig_w = rgb.shape[:2]
+        orig_h, orig_w = img.shape[:2]
+        _ref   = [None]
+        mode   = [None]   # None=pan | 'add' | 'remove'
 
-        canvas_frame = tk.Frame(win, bg=BG0)
-        canvas_frame.pack(expand=True, fill=tk.BOTH, padx=4, pady=4)
-        h_sb = ttk.Scrollbar(canvas_frame, orient="horizontal")
-        v_sb = ttk.Scrollbar(canvas_frame, orient="vertical")
-        canvas = tk.Canvas(canvas_frame, bg="#080a10",
-                            xscrollcommand=h_sb.set, yscrollcommand=v_sb.set,
-                            highlightthickness=0)
-        h_sb.config(command=canvas.xview)
-        v_sb.config(command=canvas.yview)
-        h_sb.pack(side=tk.BOTTOM, fill=tk.X)
-        v_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(expand=True, fill=tk.BOTH)
-        _ref = [None]
+        canvas = tk.Canvas(win, bg="#080a10", highlightthickness=0, cursor="fleur")
+        canvas.pack(expand=True, fill=tk.BOTH, padx=4, pady=(0, 4))
 
         def render(zoom):
+            cur_img, cur_gray = self._cache[key]
+            rgb_now = cv2.cvtColor(cur_img,
+                                   cv2.COLOR_GRAY2RGB if cur_gray else cv2.COLOR_BGR2RGB)
             nw = max(1, int(orig_w * zoom))
             nh = max(1, int(orig_h * zoom))
             interp = cv2.INTER_LINEAR if zoom >= 1 else cv2.INTER_AREA
             tk_img = ImageTk.PhotoImage(
-                Image.fromarray(cv2.resize(rgb, (nw, nh), interpolation=interp)))
+                Image.fromarray(cv2.resize(rgb_now, (nw, nh), interpolation=interp)))
             _ref[0] = tk_img
             canvas.delete("all")
             canvas.create_image(0, 0, anchor="nw", image=tk_img)
@@ -958,7 +951,8 @@ class UI:
 
         for lbl_text, z in [("50%", .5), ("100%", 1.), ("150%", 1.5),
                              ("200%", 2.), ("300%", 3.)]:
-            tk.Button(ctrl, text=lbl_text, command=lambda z=z: render(z),
+            tk.Button(ctrl, text=lbl_text,
+                      command=lambda z=z: (zoom_var.set(z), render(z)),
                       bg=BG2, fg=FG, font=F_XS, relief="flat",
                       padx=10, pady=3, cursor="hand2",
                       activebackground=AC, activeforeground="white"
@@ -972,11 +966,65 @@ class UI:
                  highlightthickness=0, bd=0, showvalue=False,
                  command=lambda v: render(float(v))).pack(side=tk.LEFT, padx=6)
 
+        # ── 스크롤 휠 = 확대/축소 ───────────────────────────────────────
         def on_wheel(event):
             z = round(zoom_var.get() + (0.1 if event.delta > 0 else -0.1), 1)
             z = max(0.2, min(4.0, z)); zoom_var.set(z); render(z)
-
         canvas.bind("<MouseWheel>", on_wheel)
+
+        # ── 드래그 = 이동 / 클릭 = 리터칭 ─────────────────────────────
+        def on_press(e):
+            if mode[0] is None:
+                canvas.scan_mark(e.x, e.y)
+            elif mode[0] == 'add' and self.cb.get('zoom_add'):
+                ix = int(canvas.canvasx(e.x) / zoom_var.get())
+                iy = int(canvas.canvasy(e.y) / zoom_var.get())
+                self.cb['zoom_add'](ix, iy)
+                render(zoom_var.get())
+            elif mode[0] == 'remove' and self.cb.get('zoom_remove'):
+                ix = int(canvas.canvasx(e.x) / zoom_var.get())
+                iy = int(canvas.canvasy(e.y) / zoom_var.get())
+                self.cb['zoom_remove'](ix, iy)
+                render(zoom_var.get())
+
+        def on_drag(e):
+            if mode[0] is None:
+                canvas.scan_dragto(e.x, e.y, gain=1)
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>",     on_drag)
+
+        # ── 리터칭 모드 버튼 (파티클 검출 결과 창에만 표시) ─────────────
+        mode_btns = []
+        if key == 'lbl_3' and self.cb.get('zoom_add'):
+            tk.Frame(ctrl, bg=BD, width=1, height=22).pack(side=tk.LEFT, padx=8, fill=tk.Y)
+            tk.Label(ctrl, text="리터칭:", font=F_XS, bg=BG1, fg=FG2).pack(side=tk.LEFT)
+
+            def set_mode(m):
+                mode[0] = m
+                cursors = {None: 'fleur', 'add': 'crosshair', 'remove': 'X_cursor'}
+                canvas.configure(cursor=cursors.get(m, 'arrow'))
+                for btn, bm in mode_btns:
+                    btn.configure(bg=AC if bm == m else BG2,
+                                  fg="white" if bm == m else FG)
+
+            b_pan = tk.Button(ctrl, text="✋ 이동",
+                              command=lambda: set_mode(None),
+                              bg=AC, fg="white", font=F_XS, relief="flat",
+                              padx=10, pady=3, cursor="hand2")
+            b_add = tk.Button(ctrl, text="＋ 파티클 추가",
+                              command=lambda: set_mode('add'),
+                              bg=BG2, fg=FG, font=F_XS, relief="flat",
+                              padx=10, pady=3, cursor="hand2")
+            b_rem = tk.Button(ctrl, text="－ 파티클 제거",
+                              command=lambda: set_mode('remove'),
+                              bg=BG2, fg=FG, font=F_XS, relief="flat",
+                              padx=10, pady=3, cursor="hand2")
+            b_pan.pack(side=tk.LEFT, padx=2)
+            b_add.pack(side=tk.LEFT, padx=2)
+            b_rem.pack(side=tk.LEFT, padx=2)
+            mode_btns = [(b_pan, None), (b_add, 'add'), (b_rem, 'remove')]
+
         tk.Frame(ctrl, bg=BD, width=1, height=22).pack(side=tk.RIGHT, padx=8, fill=tk.Y)
         self._btn(ctrl, "✕  닫기", win.destroy,
                   bg="#55263a", fg="white", font=F_XS, pad=(10, 3)
@@ -1471,7 +1519,7 @@ class SettingManager:
         # 편집 가능 파라미터
         entry_row(self._recipe_frame, "목표 파티클 크기",   "pdiam",       d.get('pdiam', 1.5),      "μm")
         entry_row(self._recipe_frame, "BG 커널 크기",      "bg_kernel",   d.get('bg_kernel', 71),   "px", "홀수, 최소 11")
-        entry_row(self._recipe_frame, "잔차 임계값",       "res_th",      d.get('res_th', 25),      "",   "권장 15~40")
+        entry_row(self._recipe_frame, "배경 대비 임계값",   "res_th",      d.get('res_th', 25),      "",   "권장 15~40")
         entry_row(self._recipe_frame, "홀 감지 임계값",    "hole_thr",    d.get('hole_thr', 120),   "",   "기본 120")
         entry_row(self._recipe_frame, "홀 마스크 여유",    "hole_margin", d.get('hole_margin', 30), "px", "기본 30")
         entry_row(self._recipe_frame, "가장자리 여백",     "margin",      d.get('margin', 0),       "px")
@@ -1567,6 +1615,8 @@ class App:
             on_mag_select    = self.on_mag_select,
             toggle_draw_mode = self.toggle_draw_mode,
             clear_exclusions = self.clear_exclusions,
+            zoom_add         = self.zoom_add_particle,
+            zoom_remove      = self.zoom_remove_particle,
         ))
 
         self.setting_mgr = SettingManager(root, self.ui, self._on_calib_apply)
@@ -1698,6 +1748,58 @@ class App:
                 f"(가장자리 반원: {n_edge}개 제외)", FG)
         except:
             pass
+
+    # ── 확대 창 리터칭 ───────────────────────────────────────────────
+    def zoom_add_particle(self, x_px, y_px):
+        """확대 창에서 파티클 수동 추가"""
+        if self.img_orig is None:
+            return
+        no = (max((p['no'] for p in self.particles), default=0)) + 1
+        pxpm = self.vision.px_per_mm
+        row = {
+            'no':    no,
+            'x_px':  x_px,  'y_px':  y_px,
+            'x_mm':  round(x_px / pxpm, 4) if pxpm else 0.0,
+            'y_mm':  round(y_px / pxpm, 4) if pxpm else 0.0,
+            'cnt':   1,
+            'manual': True,
+        }
+        self.particles.append(row)
+        self._redraw_result()
+        self.ui.update_table(self.particles)
+
+    def zoom_remove_particle(self, x_px, y_px):
+        """확대 창에서 가장 가까운 파티클 수동 제거"""
+        if not self.particles:
+            return
+        near = min(self.particles,
+                   key=lambda p: (p['x_px'] - x_px) ** 2 + (p['y_px'] - y_px) ** 2)
+        self.particles.remove(near)
+        self._redraw_result()
+        self.ui.update_table(self.particles)
+
+    def _redraw_result(self):
+        """particles 리스트 기준으로 img_out 재드로잉 (리터칭 후 반영)"""
+        if self.img_orig is None:
+            return
+        p = self.ui.get_params()
+        hole_margin = p.get('hole_margin', 30)
+        out = self.img_orig.copy()
+        for pt in self.particles:
+            color = (0, 200, 255) if pt.get('manual') else (0, 220, 60)
+            cv2.circle(out, (pt['x_px'], pt['y_px']), 6, color, 2)
+        for hole in (self.holes or []):
+            clr = EDGE_HOLE_COLOR if hole['is_edge'] else HOLE_COLOR
+            cv2.circle(out, hole['center'], hole['r'], clr, 1)
+            cv2.circle(out, hole['center'], hole['r'] + hole_margin, clr, 2)
+            if hole['is_edge']:
+                cv2.putText(out, "E",
+                            (hole['center'][0] - 8, hole['center'][1] + 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, EDGE_HOLE_COLOR, 1)
+        for exc in (self.exclusions or []):
+            cv2.circle(out, exc['center'], exc['r'], EXCL_COLOR, 2)
+        self.img_out = out
+        self.ui.show(out, self.ui.lbl_3)
 
     # ── 수동 제외 영역 ────────────────────────────────────────────────
     def toggle_draw_mode(self):
