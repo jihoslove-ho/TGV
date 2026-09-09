@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw
 import pandas as pd
 import json, io, os, re, ctypes
 
@@ -1079,47 +1079,40 @@ class UI:
         win.focus_set()
 
     def _open_crop_window(self, img, on_apply, on_reset=None):
-        """PowerPoint 스타일 이미지 자르기 창"""
+        """PowerPoint 스타일 이미지 자르기 창 (PIL 합성 방식)"""
         orig_h, orig_w = img.shape[:2]
-        max_w, max_h = 900, 640
+        max_w, max_h = 900, 620
         scale = min(max_w / orig_w, max_h / orig_h, 1.0)
         dw = int(orig_w * scale)
         dh = int(orig_h * scale)
-        PAD = 14   # 캔버스 여백 — 가장자리 핸들이 잘리지 않도록
-        HS  = 7    # 핸들 반경(display px)
-        CW  = dw + PAD * 2
-        CH  = dh + PAD * 2
+        HS = 8  # 핸들 반경(display px)
 
         win = tk.Toplevel(self.root)
         win.title("이미지 자르기")
         win.configure(bg=BG0)
-        win.geometry(f"{CW + 40}x{CH + 110}")
-        win.resizable(True, True)
+        win.geometry(f"{dw + 40}x{dh + 120}")
+        win.resizable(False, False)
         win.grab_set()
 
+        # 표시용 기본 이미지(PIL RGBA)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img_disp = cv2.resize(img_rgb, (dw, dh),
-                              interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
-        pil_img = Image.fromarray(img_disp)
-        tk_img  = ImageTk.PhotoImage(pil_img)
+        img_np  = cv2.resize(img_rgb, (dw, dh),
+                             interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+        base_pil = Image.fromarray(img_np).convert("RGBA")
 
-        # crop rect in original-image pixels (전체 이미지로 시작)
-        crop = [0, 0, orig_w, orig_h]
+        crop    = [0, 0, orig_w, orig_h]   # 이미지 좌표(px)
+        tk_ref  = [None]                    # GC 방지용
 
-        canvas = tk.Canvas(win, width=CW, height=CH,
-                           bg="#080a10", highlightthickness=0, cursor="crosshair")
+        canvas = tk.Canvas(win, width=dw, height=dh,
+                           bg="#080a10", highlightthickness=0)
         canvas.pack(padx=20, pady=(14, 6))
-        canvas.create_image(PAD, PAD, anchor="nw", image=tk_img)
-        canvas._img_ref = tk_img
 
-        def d(ix, iy):
-            """image coords → canvas coords"""
-            return PAD + ix * scale, PAD + iy * scale
+        def s(v): return int(v * scale)    # image→display 좌표 변환
 
         def get_handles():
-            x0, y0 = d(crop[0], crop[1])
-            x1, y1 = d(crop[2], crop[3])
-            mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+            x0, y0 = s(crop[0]), s(crop[1])
+            x1, y1 = s(crop[2]), s(crop[3])
+            mx, my = (x0 + x1) // 2, (y0 + y1) // 2
             return {
                 'nw': (x0, y0), 'n': (mx, y0), 'ne': (x1, y0),
                 'w':  (x0, my),                 'e':  (x1, my),
@@ -1127,37 +1120,44 @@ class UI:
             }
 
         def draw():
-            canvas.delete("ov", "cb", "hdl")
-            x0, y0 = d(crop[0], crop[1])
-            x1, y1 = d(crop[2], crop[3])
-            # 자르기 영역 바깥 반투명 어둡게 (stipple=gray50)
-            for coords in [(0, 0, CW, y0), (0, y1, CW, CH),
-                           (0, y0, x0, y1), (x1, y0, CW, y1)]:
-                canvas.create_rectangle(*coords, fill="#000000",
-                                        stipple="gray50", outline="", tags="ov")
-            # 자르기 경계선
-            canvas.create_rectangle(x0, y0, x1, y1,
-                                    outline="white", width=2, tags="cb")
-            # 3등분 가이드선
+            frame = base_pil.copy()
+            dc    = ImageDraw.Draw(frame)
+            x0, y0 = s(crop[0]), s(crop[1])
+            x1, y1 = s(crop[2]), s(crop[3])
+            # 자르기 영역 바깥 50% 투명 어둠
+            ov = Image.new("RGBA", (dw, dh), (0, 0, 0, 0))
+            ov_dc = ImageDraw.Draw(ov)
+            for r in [(0, 0, dw, y0), (0, y1, dw, dh),
+                      (0, y0, x0, y1), (x1, y0, dw, y1)]:
+                ov_dc.rectangle(r, fill=(0, 0, 0, 128))
+            frame = Image.alpha_composite(frame, ov)
+            dc = ImageDraw.Draw(frame)
+            # 흰색 경계선
+            dc.rectangle([x0, y0, x1, y1], outline=(255, 255, 255, 255), width=2)
+            # 3등분 가이드선 (반투명 흰색)
             for t in (1/3, 2/3):
-                canvas.create_line(x0 + (x1-x0)*t, y0, x0 + (x1-x0)*t, y1,
-                                   fill="#ffffff60", width=1, dash=(4, 4), tags="cb")
-                canvas.create_line(x0, y0 + (y1-y0)*t, x1, y0 + (y1-y0)*t,
-                                   fill="#ffffff60", width=1, dash=(4, 4), tags="cb")
-            # 핸들
+                gx = int(x0 + (x1 - x0) * t)
+                gy = int(y0 + (y1 - y0) * t)
+                dc.line([(gx, y0), (gx, y1)], fill=(255, 255, 255, 90), width=1)
+                dc.line([(x0, gy), (x1, gy)], fill=(255, 255, 255, 90), width=1)
+            # 핸들 (흰색 사각형, 초록 테두리)
             for hx, hy in get_handles().values():
-                canvas.create_rectangle(hx-HS, hy-HS, hx+HS, hy+HS,
-                                        fill="white", outline=GR, width=2, tags="hdl")
-
-        draw()
+                dc.rectangle([hx - HS, hy - HS, hx + HS, hy + HS],
+                             fill=(255, 255, 255, 230),
+                             outline=(31, 186, 110, 255), width=2)
+            tk_img = ImageTk.PhotoImage(frame.convert("RGB"))
+            tk_ref[0] = tk_img
+            canvas.delete("all")
+            canvas.create_image(0, 0, anchor="nw", image=tk_img)
+            size_lbl.config(text=f"{crop[2]-crop[0]} × {crop[3]-crop[1]} px")
 
         CURSORS = {
             'nw': 'top_left_corner',  'ne': 'top_right_corner',
             'sw': 'bottom_left_corner', 'se': 'bottom_right_corner',
-            'n': 'top_side', 's': 'bottom_side',
-            'e': 'right_side', 'w': 'left_side',
+            'n':  'top_side',          's':  'bottom_side',
+            'e':  'right_side',        'w':  'left_side',
         }
-        drag = [None]  # (handle, sx, sy, crop_snapshot)
+        drag = [None]
 
         def hit(mx, my):
             for pos, (hx, hy) in get_handles().items():
@@ -1183,7 +1183,6 @@ class UI:
             if 's' in pos: y1 = min(orig_h,  max(y1 + dy, y0 + 10))
             crop[0], crop[1], crop[2], crop[3] = int(x0), int(y0), int(x1), int(y1)
             draw()
-            size_lbl.config(text=f"{crop[2]-crop[0]} × {crop[3]-crop[1]} px")
 
         def on_release(e):
             drag[0] = None
@@ -1191,22 +1190,22 @@ class UI:
         def on_motion(e):
             canvas.configure(cursor=CURSORS.get(hit(e.x, e.y), "crosshair"))
 
-        canvas.bind("<ButtonPress-1>",  on_press)
-        canvas.bind("<B1-Motion>",      on_drag)
+        canvas.bind("<ButtonPress-1>",   on_press)
+        canvas.bind("<B1-Motion>",       on_drag)
         canvas.bind("<ButtonRelease-1>", on_release)
         canvas.bind("<Motion>",          on_motion)
 
         btn_fr = tk.Frame(win, bg=BG0)
         btn_fr.pack(fill=tk.X, padx=20, pady=(0, 10))
-        size_lbl = tk.Label(btn_fr,
-                            text=f"{orig_w} × {orig_h} px",
+        size_lbl = tk.Label(btn_fr, text=f"{orig_w} × {orig_h} px",
                             font=F_XS, bg=BG0, fg=FG2)
         size_lbl.pack(side=tk.LEFT, padx=4)
 
+        draw()   # 버튼 생성 후 첫 렌더링
+
         def apply_crop():
             x0, y0, x1, y1 = crop
-            cropped = img[y0:y1, x0:x1].copy()
-            on_apply(cropped)
+            on_apply(img[y0:y1, x0:x1].copy())
             win.destroy()
 
         def reset_crop():
