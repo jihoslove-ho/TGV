@@ -552,7 +552,7 @@ class UI:
             img_area.columnconfigure(i, weight=1)
         img_area.rowconfigure(0, weight=1)
 
-        self.lbl_1 = self._img_pane(img_area, "① 원본 이미지", 0, zoomable=True)
+        self.lbl_1 = self._img_pane(img_area, "① 원본 이미지", 0, zoomable=True, croppable=True)
         self.lbl_2 = self._img_pane(img_area, "② 이진화 프리뷰", 1,
                                      zoomable=True, saveable=True)
         self.lbl_3 = self._img_pane(img_area, "③ 파티클 검출 결과", 2,
@@ -888,7 +888,7 @@ class UI:
 
     # ── 이미지 패널 ───────────────────────────────────────────────────
     def _img_pane(self, parent, title, col, click=False,
-                  zoomable=False, saveable=False):
+                  zoomable=False, saveable=False, croppable=False):
         outer = tk.Frame(parent, bg=BD)
         outer.grid(row=0, column=col, sticky="nsew", padx=1, pady=1)
         key = f"lbl_{col + 1}"
@@ -912,6 +912,13 @@ class UI:
                       bg=BG3, fg=GR, font=F_XS, relief="flat", bd=0,
                       padx=10, pady=0, cursor="hand2",
                       activebackground=GR2, activeforeground="white"
+                      ).pack(side=tk.RIGHT, fill=tk.Y, padx=2, pady=4)
+        if croppable:
+            tk.Button(title_bar, text="자르기",
+                      command=lambda: self.cb['crop_image'](),
+                      bg=BG3, fg=OR, font=F_XS, relief="flat", bd=0,
+                      padx=10, pady=0, cursor="hand2",
+                      activebackground=OR2, activeforeground="white"
                       ).pack(side=tk.RIGHT, fill=tk.Y, padx=2, pady=4)
 
         lbl = tk.Label(outer, bg="#06080e")
@@ -1069,6 +1076,146 @@ class UI:
                   bg="#55263a", fg="white", font=F_XS, pad=(10, 3)
                   ).pack(side=tk.RIGHT, padx=8)
         render(1.0)
+        win.focus_set()
+
+    def _open_crop_window(self, img, on_apply, on_reset=None):
+        """PowerPoint 스타일 이미지 자르기 창"""
+        orig_h, orig_w = img.shape[:2]
+        max_w, max_h = 920, 680
+        scale = min(max_w / orig_w, max_h / orig_h, 1.0)
+        dw = int(orig_w * scale)
+        dh = int(orig_h * scale)
+
+        win = tk.Toplevel(self.root)
+        win.title("이미지 자르기")
+        win.configure(bg=BG0)
+        win.geometry(f"{dw + 40}x{dh + 110}")
+        win.resizable(True, True)
+        win.grab_set()
+
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img_disp = cv2.resize(img_rgb, (dw, dh),
+                              interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
+        pil_img = Image.fromarray(img_disp)
+        tk_img  = ImageTk.PhotoImage(pil_img)
+
+        # crop rect in original-image pixels
+        crop = [0, 0, orig_w, orig_h]
+        HS = 7  # handle half-size in display pixels
+
+        canvas = tk.Canvas(win, width=dw, height=dh,
+                           bg="#080a10", highlightthickness=1,
+                           highlightbackground=BD, cursor="crosshair")
+        canvas.pack(padx=20, pady=(14, 6))
+        canvas.create_image(0, 0, anchor="nw", image=tk_img)
+        canvas._img_ref = tk_img
+
+        def get_handles():
+            x0 = crop[0] * scale; y0 = crop[1] * scale
+            x1 = crop[2] * scale; y1 = crop[3] * scale
+            mx = (x0 + x1) / 2;   my = (y0 + y1) / 2
+            return {
+                'nw': (x0, y0), 'n': (mx, y0), 'ne': (x1, y0),
+                'w':  (x0, my),                 'e':  (x1, my),
+                'sw': (x0, y1), 's': (mx, y1),  'se': (x1, y1),
+            }
+
+        def draw():
+            canvas.delete("ov", "cb", "hdl")
+            x0 = crop[0] * scale; y0 = crop[1] * scale
+            x1 = crop[2] * scale; y1 = crop[3] * scale
+            for coords in [(0, 0, dw, y0), (0, y1, dw, dh),
+                           (0, y0, x0, y1), (x1, y0, dw, y1)]:
+                canvas.create_rectangle(*coords, fill="#000000",
+                                        stipple="gray50", outline="", tags="ov")
+            canvas.create_rectangle(x0, y0, x1, y1,
+                                    outline="white", width=2, tags="cb")
+            # rule-of-thirds guide lines
+            for t in [1/3, 2/3]:
+                canvas.create_line(x0 + (x1 - x0) * t, y0,
+                                   x0 + (x1 - x0) * t, y1,
+                                   fill="#ffffff55", width=1, tags="cb")
+                canvas.create_line(x0, y0 + (y1 - y0) * t,
+                                   x1, y0 + (y1 - y0) * t,
+                                   fill="#ffffff55", width=1, tags="cb")
+            for hx, hy in get_handles().values():
+                canvas.create_rectangle(
+                    hx - HS, hy - HS, hx + HS, hy + HS,
+                    fill="white", outline=GR, width=2, tags="hdl")
+
+        draw()
+
+        CURSORS = {
+            'nw': 'top_left_corner',  'ne': 'top_right_corner',
+            'sw': 'bottom_left_corner', 'se': 'bottom_right_corner',
+            'n': 'top_side', 's': 'bottom_side',
+            'e': 'right_side', 'w': 'left_side',
+        }
+        drag = [None]  # (handle, sx, sy, crop_snapshot)
+
+        def hit(mx, my):
+            for pos, (hx, hy) in get_handles().items():
+                if abs(mx - hx) <= HS + 3 and abs(my - hy) <= HS + 3:
+                    return pos
+            return None
+
+        def on_press(e):
+            pos = hit(e.x, e.y)
+            if pos:
+                drag[0] = (pos, e.x, e.y, crop[:])
+
+        def on_drag(e):
+            if not drag[0]:
+                return
+            pos, sx, sy, c0 = drag[0]
+            dx = (e.x - sx) / scale
+            dy = (e.y - sy) / scale
+            x0, y0, x1, y1 = c0
+            if 'w' in pos: x0 = max(0,      min(x0 + dx, x1 - 10))
+            if 'e' in pos: x1 = min(orig_w,  max(x1 + dx, x0 + 10))
+            if 'n' in pos: y0 = max(0,      min(y0 + dy, y1 - 10))
+            if 's' in pos: y1 = min(orig_h,  max(y1 + dy, y0 + 10))
+            crop[0], crop[1], crop[2], crop[3] = int(x0), int(y0), int(x1), int(y1)
+            draw()
+            size_lbl.config(text=f"{crop[2]-crop[0]} × {crop[3]-crop[1]} px")
+
+        def on_release(e):
+            drag[0] = None
+
+        def on_motion(e):
+            canvas.configure(cursor=CURSORS.get(hit(e.x, e.y), "crosshair"))
+
+        canvas.bind("<ButtonPress-1>",  on_press)
+        canvas.bind("<B1-Motion>",      on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        canvas.bind("<Motion>",          on_motion)
+
+        btn_fr = tk.Frame(win, bg=BG0)
+        btn_fr.pack(fill=tk.X, padx=20, pady=(0, 10))
+        size_lbl = tk.Label(btn_fr,
+                            text=f"{orig_w} × {orig_h} px",
+                            font=F_XS, bg=BG0, fg=FG2)
+        size_lbl.pack(side=tk.LEFT, padx=4)
+
+        def apply_crop():
+            x0, y0, x1, y1 = crop
+            cropped = img[y0:y1, x0:x1].copy()
+            on_apply(cropped)
+            win.destroy()
+
+        def reset_crop():
+            if on_reset:
+                on_reset()
+            win.destroy()
+
+        self._btn(btn_fr, "✓  적용", apply_crop,
+                  bg=GR2, fg="white", pad=(16, 6)).pack(side=tk.RIGHT, padx=4)
+        self._btn(btn_fr, "✕  취소", win.destroy,
+                  bg="#55263a", fg="white", pad=(16, 6)).pack(side=tk.RIGHT, padx=4)
+        if on_reset:
+            self._btn(btn_fr, "↺  원본 복원", reset_crop,
+                      bg=OR, fg="white", pad=(14, 6)).pack(side=tk.RIGHT, padx=4)
+
         win.focus_set()
 
     def rebuild_tabs(self, fd):
@@ -1639,6 +1786,7 @@ class App:
         self.dir       = None
         self.files     = {}
         self.img_orig  = self.img_bin = self.img_out = None
+        self._img_orig_backup = None  # 자르기 전 원본 백업
         self.holes     = []          # 자동 검출된 홀 목록
         self.exclusions = []         # 수동 제외 영역
         self.draw_mode = False       # 제외 영역 편집 모드
@@ -1662,6 +1810,7 @@ class App:
             clear_exclusions = self.clear_exclusions,
             zoom_add         = self.zoom_add_particle,
             zoom_remove      = self.zoom_remove_particle,
+            crop_image       = self.do_crop_image,
         ))
 
         self.setting_mgr = SettingManager(root, self.ui, self._on_calib_apply)
@@ -1739,8 +1888,9 @@ class App:
             self.img_orig = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if self.img_orig is None:
                 return
-            # 파일 변경 시 제외 영역 초기화
+            # 파일 변경 시 제외 영역 및 자르기 백업 초기화
             self.exclusions = []
+            self._img_orig_backup = None
             self.ui.update_excl_count(0)
             self._detect_holes()
             self.ui.show(self.img_orig, self.ui.lbl_1)
@@ -1846,6 +1996,30 @@ class App:
             cv2.circle(out, exc['center'], exc['r'], EXCL_COLOR, 2)
         self.img_out = out
         self.ui.show(out, self.ui.lbl_3)
+
+    # ── 이미지 자르기 ─────────────────────────────────────────────────
+    def do_crop_image(self):
+        if self.img_orig is None:
+            return
+        if self._img_orig_backup is None:
+            self._img_orig_backup = self.img_orig.copy()
+
+        def on_apply(cropped):
+            self.img_orig = cropped
+            self._img_orig_backup = self._img_orig_backup  # keep backup
+            self._detect_holes()
+            self.ui.show(self.img_orig, self.ui.lbl_1)
+            self.update_all()
+
+        def on_reset():
+            if self._img_orig_backup is not None:
+                self.img_orig = self._img_orig_backup.copy()
+                self._img_orig_backup = None
+                self._detect_holes()
+                self.ui.show(self.img_orig, self.ui.lbl_1)
+                self.update_all()
+
+        self.ui._open_crop_window(self.img_orig, on_apply, on_reset)
 
     # ── 수동 제외 영역 ────────────────────────────────────────────────
     def toggle_draw_mode(self):
