@@ -1081,15 +1081,19 @@ class UI:
     def _open_crop_window(self, img, on_apply, on_reset=None):
         """PowerPoint 스타일 이미지 자르기 창"""
         orig_h, orig_w = img.shape[:2]
-        max_w, max_h = 920, 680
+        max_w, max_h = 900, 640
         scale = min(max_w / orig_w, max_h / orig_h, 1.0)
         dw = int(orig_w * scale)
         dh = int(orig_h * scale)
+        PAD = 14   # 캔버스 여백 — 가장자리 핸들이 잘리지 않도록
+        HS  = 7    # 핸들 반경(display px)
+        CW  = dw + PAD * 2
+        CH  = dh + PAD * 2
 
         win = tk.Toplevel(self.root)
         win.title("이미지 자르기")
         win.configure(bg=BG0)
-        win.geometry(f"{dw + 40}x{dh + 110}")
+        win.geometry(f"{CW + 40}x{CH + 110}")
         win.resizable(True, True)
         win.grab_set()
 
@@ -1099,21 +1103,23 @@ class UI:
         pil_img = Image.fromarray(img_disp)
         tk_img  = ImageTk.PhotoImage(pil_img)
 
-        # crop rect in original-image pixels
+        # crop rect in original-image pixels (전체 이미지로 시작)
         crop = [0, 0, orig_w, orig_h]
-        HS = 7  # handle half-size in display pixels
 
-        canvas = tk.Canvas(win, width=dw, height=dh,
-                           bg="#080a10", highlightthickness=1,
-                           highlightbackground=BD, cursor="crosshair")
+        canvas = tk.Canvas(win, width=CW, height=CH,
+                           bg="#080a10", highlightthickness=0, cursor="crosshair")
         canvas.pack(padx=20, pady=(14, 6))
-        canvas.create_image(0, 0, anchor="nw", image=tk_img)
+        canvas.create_image(PAD, PAD, anchor="nw", image=tk_img)
         canvas._img_ref = tk_img
 
+        def d(ix, iy):
+            """image coords → canvas coords"""
+            return PAD + ix * scale, PAD + iy * scale
+
         def get_handles():
-            x0 = crop[0] * scale; y0 = crop[1] * scale
-            x1 = crop[2] * scale; y1 = crop[3] * scale
-            mx = (x0 + x1) / 2;   my = (y0 + y1) / 2
+            x0, y0 = d(crop[0], crop[1])
+            x1, y1 = d(crop[2], crop[3])
+            mx, my = (x0 + x1) / 2, (y0 + y1) / 2
             return {
                 'nw': (x0, y0), 'n': (mx, y0), 'ne': (x1, y0),
                 'w':  (x0, my),                 'e':  (x1, my),
@@ -1122,26 +1128,26 @@ class UI:
 
         def draw():
             canvas.delete("ov", "cb", "hdl")
-            x0 = crop[0] * scale; y0 = crop[1] * scale
-            x1 = crop[2] * scale; y1 = crop[3] * scale
-            for coords in [(0, 0, dw, y0), (0, y1, dw, dh),
-                           (0, y0, x0, y1), (x1, y0, dw, y1)]:
+            x0, y0 = d(crop[0], crop[1])
+            x1, y1 = d(crop[2], crop[3])
+            # 자르기 영역 바깥 반투명 어둡게 (stipple=gray50)
+            for coords in [(0, 0, CW, y0), (0, y1, CW, CH),
+                           (0, y0, x0, y1), (x1, y0, CW, y1)]:
                 canvas.create_rectangle(*coords, fill="#000000",
                                         stipple="gray50", outline="", tags="ov")
+            # 자르기 경계선
             canvas.create_rectangle(x0, y0, x1, y1,
                                     outline="white", width=2, tags="cb")
-            # rule-of-thirds guide lines
-            for t in [1/3, 2/3]:
-                canvas.create_line(x0 + (x1 - x0) * t, y0,
-                                   x0 + (x1 - x0) * t, y1,
-                                   fill="#ffffff55", width=1, tags="cb")
-                canvas.create_line(x0, y0 + (y1 - y0) * t,
-                                   x1, y0 + (y1 - y0) * t,
-                                   fill="#ffffff55", width=1, tags="cb")
+            # 3등분 가이드선
+            for t in (1/3, 2/3):
+                canvas.create_line(x0 + (x1-x0)*t, y0, x0 + (x1-x0)*t, y1,
+                                   fill="#ffffff60", width=1, dash=(4, 4), tags="cb")
+                canvas.create_line(x0, y0 + (y1-y0)*t, x1, y0 + (y1-y0)*t,
+                                   fill="#ffffff60", width=1, dash=(4, 4), tags="cb")
+            # 핸들
             for hx, hy in get_handles().values():
-                canvas.create_rectangle(
-                    hx - HS, hy - HS, hx + HS, hy + HS,
-                    fill="white", outline=GR, width=2, tags="hdl")
+                canvas.create_rectangle(hx-HS, hy-HS, hx+HS, hy+HS,
+                                        fill="white", outline=GR, width=2, tags="hdl")
 
         draw()
 
@@ -1155,7 +1161,7 @@ class UI:
 
         def hit(mx, my):
             for pos, (hx, hy) in get_handles().items():
-                if abs(mx - hx) <= HS + 3 and abs(my - hy) <= HS + 3:
+                if abs(mx - hx) <= HS + 4 and abs(my - hy) <= HS + 4:
                     return pos
             return None
 
