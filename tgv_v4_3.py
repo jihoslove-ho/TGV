@@ -15,8 +15,8 @@ BG2   = "#1c2030"
 BG3   = "#242840"
 BG4   = "#2d3350"
 FG    = "#d4daf0"
-FG2   = "#606880"
-FG3   = "#8899bb"
+FG2   = "#8090b0"
+FG3   = "#a0b0cc"
 AC    = "#3d8ef0"
 AC2   = "#1a6fd8"
 GR    = "#1fba6e"
@@ -47,14 +47,15 @@ def _hex_to_bgr(h):
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return (b, g, r)
 
-_F    = "Segoe UI"
-F_XS  = (_F, 8)
-F_SM  = (_F, 9)
-F_SMB = (_F, 9,  "bold")
-F_MD  = (_F, 10)
-F_MDB = (_F, 10, "bold")
-F_LG  = (_F, 11, "bold")
-F_XL  = (_F, 13, "bold")
+_F    = "맑은 고딕"
+F_XS  = (_F, 9)
+F_SM  = (_F, 10)
+F_SMB = (_F, 10, "bold")
+F_MD  = (_F, 11)
+F_MDB = (_F, 11, "bold")
+F_LG  = (_F, 12, "bold")
+F_XL  = (_F, 14, "bold")
+F_HINT = (_F, 8)           # 슬라이더 옆 보조 힌트 전용 (작은 공간)
 
 # ══════════════════════════════════════════════════════════════════════
 #  1. 데이터 I/O
@@ -449,7 +450,7 @@ class UI:
                  fg=AC, bg=BG1, width=6, anchor="e").pack(side=tk.RIGHT)
         row = self._frame(wrap, BG1)
         row.pack()
-        btn_cfg = dict(font=(_F, 8), bg=BG3, fg=FG3, relief="flat",
+        btn_cfg = dict(font=F_XS, bg=BG3, fg=FG3, relief="flat",
                        padx=4, pady=1, cursor="hand2",
                        activebackground=BG4, activeforeground=AC)
         tk.Button(row, text="‹",
@@ -715,11 +716,11 @@ class UI:
         res_inner.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=4)
 
         # 배경 추정 커널
-        r_bgk = tk.Frame(res_inner, bg=BG2); r_bgk.pack(fill=tk.X, pady=(0, 2))
+        r_bgk = tk.Frame(res_inner, bg=BG2); r_bgk.pack(fill=tk.X, pady=(0, 1))
         self._slider(r_bgk, "배경 추정 커널",
                      self.v_bg_kernel, 11, 201, 2, self.cb['update_all'], 160)
-        tk.Label(r_bgk, text="클수록 헤일로·조명 편차 자동 제거\n(기본 71, 항상 홀수 처리)",
-                 font=F_XS, bg=BG2, fg=FG2, justify="left").pack(side=tk.LEFT, padx=8)
+        tk.Label(res_inner, text="클수록 헤일로·조명 편차 자동 제거  (기본 71, 항상 홀수 처리)",
+                 font=F_HINT, bg=BG2, fg=FG2).pack(anchor="w", padx=16, pady=(0, 3))
 
         # 잔차 임계값
         r_res = tk.Frame(res_inner, bg=BG2); r_res.pack(fill=tk.X, pady=(2, 0))
@@ -750,17 +751,17 @@ class UI:
 
         # ── 우 컬럼: TGV 홀 자동 마스킹 ─────────────────────────────
         row_hdr(right, "TGV 홀 자동 마스킹  [앞/뒷면 공통]", RD)
-        r3 = self._frame(right, BG1); r3.pack(fill=tk.X, padx=4, pady=(0, 3))
+        r3 = self._frame(right, BG1); r3.pack(fill=tk.X, padx=4, pady=(0, 1))
         self._slider(r3, "홀 감지 임계값 (기본 120)",
-                     self.v_hole_thr, 60, 180, 2, self.cb['update_all'], 140)
-        tk.Label(r3, text="낮을수록 림만/\n높을수록 그림자 포함",
-                 font=F_XS, bg=BG1, fg=FG2, justify="left").pack(side=tk.LEFT, padx=6)
+                     self.v_hole_thr, 60, 180, 2, self.cb['update_all'], 130)
+        tk.Label(right, text="낮을수록 림만 / 높을수록 그림자 포함",
+                 font=F_HINT, bg=BG1, fg=FG2).pack(anchor="w", padx=16, pady=(0, 2))
         tk.Frame(right, bg=BD2, height=1).pack(fill=tk.X, padx=8, pady=2)
-        r3b = self._frame(right, BG1); r3b.pack(fill=tk.X, padx=4, pady=(0, 2))
+        r3b = self._frame(right, BG1); r3b.pack(fill=tk.X, padx=4, pady=(0, 1))
         self._slider(r3b, "홀 마스크 여유 (px)",
-                     self.v_hole_mg, 0, 60, 1, self.cb['update_all'], 120)
-        tk.Label(r3b, text="림 반경 외부\n추가 제외",
-                 font=F_XS, bg=BG1, fg=FG2, justify="left").pack(side=tk.LEFT, padx=6)
+                     self.v_hole_mg, 0, 60, 1, self.cb['update_all'], 130)
+        tk.Label(right, text="림 반경 외부 / 추가 제외",
+                 font=F_HINT, bg=BG1, fg=FG2).pack(anchor="w", padx=16, pady=(0, 2))
 
     def _set_particle_color(self, hex_c):
         self.v_particle_color.set(hex_c)
